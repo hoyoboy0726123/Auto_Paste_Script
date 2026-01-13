@@ -1,0 +1,29 @@
+{
+    "alt+1": [
+        {
+            "delay": 0.30000000000000004,
+            "type": "text",
+            "value": "test1"
+        },
+        {
+            "delay": 1.5,
+            "type": "image",
+            "value": "images\\1768269028_example.png"
+        },
+        {
+            "delay": 0.3,
+            "type": "text",
+            "value": "test2"
+        },
+        {
+            "delay": 1.5,
+            "type": "image",
+            "value": "images\\1768269028_BIRD.png"
+        },
+        {
+            "delay": 0.1,
+            "type": "key",
+            "value": "enter"
+        }
+    ]
+}
