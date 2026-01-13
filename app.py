@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QCheckBox, QGroupBox, QFileDialog, QListWidget, 
                              QTabWidget, QComboBox, QSplitter, QDoubleSpinBox, QListWidgetItem)
 from PyQt6.QtGui import QIcon, QAction, QImage
-from PyQt6.QtCore import Qt, QTimer, QSize, QEventLoop, QObject, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QSize, QEventLoop, QObject, pyqtSignal, QEvent
 
 # Allow Ctrl+C to kill the app
 signal.signal(signal.SIGINT, signal.SIG_DFL)
@@ -37,7 +37,7 @@ class HotkeyService(QObject):
         return key_combo.lower().replace(" ", "")
 
     def load_config(self):
-        """Load hotkeys, supporting migration from v1 (string) and v2 (dict) to v3 (list)."""
+        """Load hotkeys, supporting migration to v4 (dict with tag and actions)."""
         if os.path.exists(CONFIG_FILE):
             try:
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
@@ -47,16 +47,25 @@ class HotkeyService(QObject):
                     for k, v in raw_data.items():
                         norm_k = self.normalize_key(k)
                         
-                        # Migration Logic
-                        if isinstance(v, str):
-                            # v1: value was just a string
-                            self.hotkeys[norm_k] = [{'type': 'text', 'value': v}]
-                        elif isinstance(v, dict):
-                            # v2: value was a single dict
-                            self.hotkeys[norm_k] = [v]
+                        # Data Structure Normalization
+                        # Goal: {'tag': 'My Tag', 'actions': [...]}
+                        
+                        final_data = {'tag': '', 'actions': []}
+
+                        if isinstance(v, dict) and 'actions' in v:
+                            # v4: Already new format
+                            final_data = v
                         elif isinstance(v, list):
-                            # v3: value is already a list of actions
-                            self.hotkeys[norm_k] = v
+                            # v3: Just a list of actions
+                            final_data['actions'] = v
+                        elif isinstance(v, dict) and 'type' in v:
+                            # v2: Single action dict
+                            final_data['actions'] = [v]
+                        elif isinstance(v, str):
+                            # v1: String value
+                            final_data['actions'] = [{'type': 'text', 'value': v}]
+                            
+                        self.hotkeys[norm_k] = final_data
             except Exception as e:
                 print(f"Error loading config: {e}")
                 self.hotkeys = {}
@@ -70,13 +79,14 @@ class HotkeyService(QObject):
         except Exception as e:
             print(f"Error saving config: {e}")
 
-    def add_hotkey(self, key_combo, actions):
+    def add_hotkey(self, key_combo, actions, tag=""):
         """
         key_combo: str
-        actions: list of dicts [{'type': 'text'|'image'|'key', 'value': '...'}]
+        actions: list
+        tag: str
         """
         key = self.normalize_key(key_combo)
-        self.hotkeys[key] = actions
+        self.hotkeys[key] = {'tag': tag, 'actions': actions}
         self.save_config()
         self.restart_listening()
 
@@ -100,10 +110,12 @@ class HotkeyService(QObject):
         except:
             pass
 
-        for key, actions in self.hotkeys.items():
+        for key, data in self.hotkeys.items():
             try:
-                # Capture 'actions' in default arg to prevent closure binding issues
-                keyboard.add_hotkey(key, lambda a=actions: self.trigger_sequence(a), suppress=True)
+                # Capture 'actions' from the data dict
+                actions = data.get('actions', [])
+                if actions:
+                    keyboard.add_hotkey(key, lambda a=actions: self.trigger_sequence(a), suppress=True)
             except Exception as e:
                 print(f"Failed to register hotkey '{key}': {e}")
         
@@ -142,18 +154,21 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(0, 0, 0, 0)
         
-        lbl_list = QLabel("已設定的快捷鍵")
-        lbl_list.setStyleSheet("font-weight: bold;")
+        lbl_list = QLabel("已設定的快捷鍵 (💡 雙擊「備註」欄位可直接修改)")
+        lbl_list.setStyleSheet("font-weight: bold; color: #555;")
         
         self.table = QTableWidget()
-        self.table.setColumnCount(2)
-        self.table.setHorizontalHeaderLabels(["快捷鍵", "動作數"])
-        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["快捷鍵", "備註", "動作數"])
+        self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        # Allow editing, but we will restrict it to column 1 in refresh_table
+        self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.itemClicked.connect(self.on_table_click)
+        self.table.itemChanged.connect(self.on_table_item_changed)
         
         btn_layout = QHBoxLayout()
         self.btn_new = QPushButton("✨ 新增")
@@ -174,7 +189,10 @@ class MainWindow(QMainWindow):
 
         # 1. Key Setting
         key_group = QGroupBox("1. 設定觸發快捷鍵")
-        key_layout = QHBoxLayout()
+        key_layout = QVBoxLayout()
+        
+        # Row 1: Keys
+        k_row = QHBoxLayout()
         self.chk_ctrl = QCheckBox("Ctrl")
         self.chk_shift = QCheckBox("Shift")
         self.chk_alt = QCheckBox("Alt")
@@ -183,15 +201,18 @@ class MainWindow(QMainWindow):
         self.key_input.setFixedWidth(80)
         self.key_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        key_layout.addWidget(self.chk_ctrl)
-        key_layout.addWidget(self.chk_shift)
-        key_layout.addWidget(self.chk_alt)
-        key_layout.addWidget(QLabel("+"))
-        key_layout.addWidget(self.key_input)
-        key_layout.addStretch()
+        k_row.addWidget(self.chk_ctrl)
+        k_row.addWidget(self.chk_shift)
+        k_row.addWidget(self.chk_alt)
+        k_row.addWidget(QLabel("+"))
+        k_row.addWidget(self.key_input)
+        k_row.addStretch()
+        
+        key_layout.addLayout(k_row)
         key_group.setLayout(key_layout)
 
         # 2. Sequence List
+        seq_group = QGroupBox("2. 編輯動作序列")
         seq_group = QGroupBox("2. 編輯動作序列")
         seq_layout = QHBoxLayout()
         
@@ -313,6 +334,24 @@ class MainWindow(QMainWindow):
         self.setup_tray()
         self.refresh_table()
 
+        # Global Focus Management
+        QApplication.instance().focusChanged.connect(self.on_focus_changed)
+
+    def on_focus_changed(self, old, new):
+        """
+        Global handler to pause hotkeys when user is typing in any input field.
+        """
+        if new and (isinstance(new, QLineEdit) or isinstance(new, QDoubleSpinBox) or isinstance(new, QComboBox)):
+            # User is typing -> Stop global hooks
+            if self.service.is_listening:
+                self.service.stop_listening()
+                self.status_label.setText("輸入模式 (快捷鍵暫停)")
+        else:
+            # User left input field -> Resume global hooks
+            if not self.service.is_listening:
+                self.service.restart_listening()
+                self.status_label.setText("就緒")
+
     # --- UI Logic ---
     def on_tab_changed(self, index):
         # Auto-set recommended delay
@@ -407,8 +446,12 @@ class MainWindow(QMainWindow):
                     except: pass
             
             actions.append(data)
-
-        self.service.add_hotkey(key, actions)
+        
+        # Preserve existing tag if re-saving, or empty if new
+        existing_data = self.service.hotkeys.get(key, {})
+        tag = existing_data.get('tag', '')
+        
+        self.service.add_hotkey(key, actions, tag)
         self.refresh_table()
         self.reset_editor()
         self.status_label.setText(f"已儲存: {key}")
@@ -424,7 +467,7 @@ class MainWindow(QMainWindow):
 
     def on_table_click(self, item):
         key = self.table.item(item.row(), 0).text()
-        actions = self.service.hotkeys.get(key, [])
+        data = self.service.hotkeys.get(key, {'tag': '', 'actions': []})
         
         # Set keys
         self.reset_editor()
@@ -437,10 +480,26 @@ class MainWindow(QMainWindow):
         if main: self.key_input.setText(main[0])
         
         # Set list
+        actions = data.get('actions', [])
         for act in actions:
             # Fallback for old data without delay
             delay = act.get('delay', 0.5 if act['type']=='image' else 0.1)
             self.add_step_to_list(act['type'], act['value'], act['value'], delay)
+
+    def on_table_item_changed(self, item):
+        # Only handle edits in Column 1 (Tag)
+        if item.column() == 1:
+            row = item.row()
+            key_item = self.table.item(row, 0)
+            if key_item:
+                key = key_item.text()
+                new_tag = item.text()
+                
+                # Update service data without triggering a full reload that might reset focus
+                if key in self.service.hotkeys:
+                    self.service.hotkeys[key]['tag'] = new_tag
+                    self.service.save_config()
+                    # self.status_label.setText(f"已更新備註: {key}")
 
     def reset_editor(self):
         self.chk_ctrl.setChecked(False)
@@ -452,12 +511,30 @@ class MainWindow(QMainWindow):
         self.lbl_img.clear()
 
     def refresh_table(self):
+        self.table.blockSignals(True) # Prevent itemChanged from firing during reload
         self.table.setRowCount(0)
         for k, v in self.service.hotkeys.items():
             r = self.table.rowCount()
             self.table.insertRow(r)
-            self.table.setItem(r, 0, QTableWidgetItem(k))
-            self.table.setItem(r, 1, QTableWidgetItem(str(len(v))))
+            
+            # Key (Read-only)
+            item_key = QTableWidgetItem(k)
+            item_key.setFlags(item_key.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(r, 0, item_key)
+            
+            # Tag (Editable)
+            tag = v.get('tag', '')
+            item_tag = QTableWidgetItem(tag)
+            # Default flags include ItemIsEditable, so we keep it
+            self.table.setItem(r, 1, item_tag)
+            
+            # Count (Read-only)
+            actions = v.get('actions', [])
+            item_count = QTableWidgetItem(str(len(actions)))
+            item_count.setFlags(item_count.flags() ^ Qt.ItemFlag.ItemIsEditable)
+            self.table.setItem(r, 2, item_count)
+            
+        self.table.blockSignals(False)
 
     # --- Execution ---
     def safe_wait(self, seconds):
