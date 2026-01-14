@@ -46,23 +46,15 @@ class HotkeyService(QObject):
                     self.hotkeys = {}
                     for k, v in raw_data.items():
                         norm_k = self.normalize_key(k)
-                        
-                        # Data Structure Normalization
-                        # Goal: {'tag': 'My Tag', 'actions': [...]}
-                        
                         final_data = {'tag': '', 'actions': []}
 
                         if isinstance(v, dict) and 'actions' in v:
-                            # v4: Already new format
                             final_data = v
                         elif isinstance(v, list):
-                            # v3: Just a list of actions
                             final_data['actions'] = v
                         elif isinstance(v, dict) and 'type' in v:
-                            # v2: Single action dict
                             final_data['actions'] = [v]
                         elif isinstance(v, str):
-                            # v1: String value
                             final_data['actions'] = [{'type': 'text', 'value': v}]
                             
                         self.hotkeys[norm_k] = final_data
@@ -80,11 +72,6 @@ class HotkeyService(QObject):
             print(f"Error saving config: {e}")
 
     def add_hotkey(self, key_combo, actions, tag=""):
-        """
-        key_combo: str
-        actions: list
-        tag: str
-        """
         key = self.normalize_key(key_combo)
         self.hotkeys[key] = {'tag': tag, 'actions': actions}
         self.save_config()
@@ -98,10 +85,6 @@ class HotkeyService(QObject):
             self.restart_listening()
 
     def trigger_sequence(self, actions):
-        """
-        Callback when hotkey is pressed. 
-        Emits the whole sequence to the Main Thread.
-        """
         self.paste_requested.emit(actions)
 
     def start_listening(self):
@@ -111,8 +94,9 @@ class HotkeyService(QObject):
             pass
 
         for key, data in self.hotkeys.items():
+            if not key or key.strip() == "":
+                continue
             try:
-                # Capture 'actions' from the data dict
                 actions = data.get('actions', [])
                 if actions:
                     keyboard.add_hotkey(key, lambda a=actions: self.trigger_sequence(a), suppress=True)
@@ -122,18 +106,21 @@ class HotkeyService(QObject):
         self.is_listening = True
 
     def stop_listening(self):
-        keyboard.unhook_all()
+        try:
+            keyboard.unhook_all()
+        except:
+            pass
         self.is_listening = False
 
     def restart_listening(self):
-        if self.is_listening:
-            self.start_listening()
+        self.start_listening()
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("QuickPaste v3.1 - 可自訂延遲版")
         self.resize(1000, 700)
+        self.is_quitting = False
 
         # Initialize Service
         self.service = HotkeyService()
@@ -143,8 +130,6 @@ class MainWindow(QMainWindow):
         # UI Setup
         self.central_widget = QWidget()
         self.setCentralWidget(self.central_widget)
-        # self.main_layout was causing the double layout error
-
 
         # Splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -165,7 +150,6 @@ class MainWindow(QMainWindow):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        # Allow editing, but we will restrict it to column 1 in refresh_table
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.DoubleClicked | QAbstractItemView.EditTrigger.EditKeyPressed)
         self.table.itemClicked.connect(self.on_table_click)
         self.table.itemChanged.connect(self.on_table_item_changed)
@@ -187,11 +171,8 @@ class MainWindow(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
-        # 1. Key Setting
         key_group = QGroupBox("1. 設定觸發快捷鍵")
         key_layout = QVBoxLayout()
-        
-        # Row 1: Keys
         k_row = QHBoxLayout()
         self.chk_ctrl = QCheckBox("Ctrl")
         self.chk_shift = QCheckBox("Shift")
@@ -200,25 +181,19 @@ class MainWindow(QMainWindow):
         self.key_input.setPlaceholderText("主按鍵 (如: 1, a)")
         self.key_input.setFixedWidth(80)
         self.key_input.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        
         k_row.addWidget(self.chk_ctrl)
         k_row.addWidget(self.chk_shift)
         k_row.addWidget(self.chk_alt)
         k_row.addWidget(QLabel("+"))
         k_row.addWidget(self.key_input)
         k_row.addStretch()
-        
         key_layout.addLayout(k_row)
         key_group.setLayout(key_layout)
 
-        # 2. Sequence List
-        seq_group = QGroupBox("2. 編輯動作序列")
         seq_group = QGroupBox("2. 編輯動作序列")
         seq_layout = QHBoxLayout()
-        
         self.seq_list = QListWidget()
         self.seq_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        
         ctrl_layout = QVBoxLayout()
         self.btn_up = QPushButton("▲")
         self.btn_up.setFixedWidth(30)
@@ -230,21 +205,16 @@ class MainWindow(QMainWindow):
         self.btn_remove.setFixedWidth(30)
         self.btn_remove.setStyleSheet("color: red;")
         self.btn_remove.clicked.connect(self.remove_step)
-        
         ctrl_layout.addWidget(self.btn_up)
         ctrl_layout.addWidget(self.btn_down)
         ctrl_layout.addStretch()
         ctrl_layout.addWidget(self.btn_remove)
-        
         seq_layout.addWidget(self.seq_list)
         seq_layout.addLayout(ctrl_layout)
         seq_group.setLayout(seq_layout)
 
-        # 3. Add Action (With Delay Setting)
         add_group = QGroupBox("3. 加入新動作")
         add_layout = QVBoxLayout()
-        
-        # Delay Spinner (Global for adding)
         delay_layout = QHBoxLayout()
         self.spin_delay = QDoubleSpinBox()
         self.spin_delay.setRange(0.0, 10.0)
@@ -258,7 +228,6 @@ class MainWindow(QMainWindow):
         self.tab_widget = QTabWidget()
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
         
-        # Tab Text
         tab_text = QWidget()
         t_layout = QHBoxLayout(tab_text)
         self.txt_input = QLineEdit()
@@ -268,7 +237,6 @@ class MainWindow(QMainWindow):
         t_layout.addWidget(self.txt_input)
         t_layout.addWidget(btn_add_t)
         
-        # Tab Key
         tab_key = QWidget()
         k_layout = QHBoxLayout(tab_key)
         self.cmb_keys = QComboBox()
@@ -279,7 +247,6 @@ class MainWindow(QMainWindow):
         k_layout.addWidget(self.cmb_keys)
         k_layout.addWidget(btn_add_k)
         
-        # Tab Image
         tab_img = QWidget()
         i_layout = QHBoxLayout(tab_img)
         self.lbl_img = QLineEdit()
@@ -313,61 +280,56 @@ class MainWindow(QMainWindow):
         splitter.addWidget(right_panel)
         splitter.setStretchFactor(1, 2)
 
-        # Footer
         bottom_bar = QHBoxLayout()
         self.status_label = QLabel("就緒")
         self.status_label.setStyleSheet("color: gray;")
+        
+        self.btn_reload = QPushButton("🔄 重載快捷鍵")
+        self.btn_reload.clicked.connect(self.on_reload_click)
+
         self.btn_quit = QPushButton("🔴 結束程式")
         self.btn_quit.clicked.connect(self.quit_app)
         self.btn_quit.setStyleSheet("color: red;")
         
         bottom_bar.addWidget(self.status_label)
         bottom_bar.addStretch()
+        bottom_bar.addWidget(self.btn_reload)
         bottom_bar.addWidget(self.btn_quit)
 
         layout_container = QVBoxLayout()
         layout_container.addWidget(splitter)
         layout_container.addLayout(bottom_bar)
-        
         self.central_widget.setLayout(layout_container)
         
         self.setup_tray()
         self.refresh_table()
 
-        # Global Focus Management
         QApplication.instance().focusChanged.connect(self.on_focus_changed)
 
+    def on_reload_click(self):
+        self.service.restart_listening()
+        self.status_label.setText("快捷鍵已重載 ✓")
+        QTimer.singleShot(2000, lambda: self.status_label.setText("就緒"))
+
     def on_focus_changed(self, old, new):
-        """
-        Global handler to pause hotkeys when user is typing in any input field.
-        """
         if new and (isinstance(new, QLineEdit) or isinstance(new, QDoubleSpinBox) or isinstance(new, QComboBox)):
-            # User is typing -> Stop global hooks
             if self.service.is_listening:
                 self.service.stop_listening()
                 self.status_label.setText("輸入模式 (快捷鍵暫停)")
         else:
-            # User left input field -> Resume global hooks
             if not self.service.is_listening:
                 self.service.restart_listening()
                 self.status_label.setText("就緒")
 
-    # --- UI Logic ---
     def on_tab_changed(self, index):
-        # Auto-set recommended delay
-        if index == 0: self.spin_delay.setValue(0.3) # Text
-        elif index == 1: self.spin_delay.setValue(0.1) # Key
-        elif index == 2: self.spin_delay.setValue(1.5) # Image (Safer default)
+        if index == 0: self.spin_delay.setValue(0.3)
+        elif index == 1: self.spin_delay.setValue(0.1)
+        elif index == 2: self.spin_delay.setValue(1.5)
 
     def add_step_to_list(self, a_type, value, display, delay):
         item_text = f"[{a_type.upper()}] {display} (wait {delay}s)"
         l_item = QListWidgetItem(item_text)
-        # Store full data object
-        l_item.setData(Qt.ItemDataRole.UserRole, {
-            'type': a_type, 
-            'value': value, 
-            'delay': delay
-        })
+        l_item.setData(Qt.ItemDataRole.UserRole, {'type': a_type, 'value': value, 'delay': delay})
         self.seq_list.addItem(l_item)
         self.seq_list.scrollToBottom()
 
@@ -379,8 +341,7 @@ class MainWindow(QMainWindow):
 
     def add_key_step(self):
         val = self.cmb_keys.currentText()
-        if val:
-            self.add_step_to_list('key', val, val, self.spin_delay.value())
+        if val: self.add_step_to_list('key', val, val, self.spin_delay.value())
 
     def add_img_step(self):
         path = self.lbl_img.text()
@@ -410,7 +371,6 @@ class MainWindow(QMainWindow):
             self.seq_list.insertItem(row+1, item)
             self.seq_list.setCurrentRow(row+1)
 
-    # --- Save/Load ---
     def get_key_string(self):
         parts = []
         if self.chk_ctrl.isChecked(): parts.append("ctrl")
@@ -423,18 +383,10 @@ class MainWindow(QMainWindow):
 
     def save_hotkey(self):
         key = self.get_key_string()
-        if not key: 
-            QMessageBox.warning(self, "Error", "缺少按鍵")
-            return
-        if self.seq_list.count() == 0:
-            QMessageBox.warning(self, "Error", "缺少動作")
-            return
-
+        if not key or self.seq_list.count() == 0: return
         actions = []
         for i in range(self.seq_list.count()):
             data = self.seq_list.item(i).data(Qt.ItemDataRole.UserRole)
-            
-            # Image copy logic
             if data['type'] == 'image':
                 src = data['value']
                 if "images" not in src and os.path.exists(src):
@@ -444,14 +396,31 @@ class MainWindow(QMainWindow):
                         shutil.copy2(src, dest)
                         data['value'] = dest
                     except: pass
-            
             actions.append(data)
         
-        # Preserve existing tag if re-saving, or empty if new
-        existing_data = self.service.hotkeys.get(key, {})
-        tag = existing_data.get('tag', '')
+        # Smart Tag Generation
+        current_tag = self.service.hotkeys.get(key, {}).get('tag', '')
         
-        self.service.add_hotkey(key, actions, tag)
+        # Only auto-generate if tag is empty
+        if not current_tag.strip():
+            summary_parts = []
+            for act in actions:
+                if act['type'] == 'text':
+                    # Truncate text to 6 chars
+                    t_val = act['value']
+                    if len(t_val) > 6: t_val = t_val[:6] + ".."
+                    summary_parts.append(f"文[{t_val}]")
+                elif act['type'] == 'key':
+                    summary_parts.append(f"按[{act['value']}]")
+                elif act['type'] == 'image':
+                    summary_parts.append("圖")
+            
+            # Limit total summary length
+            full_summary = "+".join(summary_parts)
+            if len(full_summary) > 40: full_summary = full_summary[:40] + "..."
+            current_tag = full_summary
+        
+        self.service.add_hotkey(key, actions, current_tag)
         self.refresh_table()
         self.reset_editor()
         self.status_label.setText(f"已儲存: {key}")
@@ -468,8 +437,6 @@ class MainWindow(QMainWindow):
     def on_table_click(self, item):
         key = self.table.item(item.row(), 0).text()
         data = self.service.hotkeys.get(key, {'tag': '', 'actions': []})
-        
-        # Set keys
         self.reset_editor()
         parts = key.split('+')
         self.chk_ctrl.setChecked('ctrl' in parts)
@@ -478,28 +445,19 @@ class MainWindow(QMainWindow):
         mods = ['ctrl','shift','alt']
         main = [p for p in parts if p not in mods]
         if main: self.key_input.setText(main[0])
-        
-        # Set list
-        actions = data.get('actions', [])
-        for act in actions:
-            # Fallback for old data without delay
+        for act in data.get('actions', []):
             delay = act.get('delay', 0.5 if act['type']=='image' else 0.1)
             self.add_step_to_list(act['type'], act['value'], act['value'], delay)
 
     def on_table_item_changed(self, item):
-        # Only handle edits in Column 1 (Tag)
         if item.column() == 1:
             row = item.row()
             key_item = self.table.item(row, 0)
             if key_item:
                 key = key_item.text()
-                new_tag = item.text()
-                
-                # Update service data without triggering a full reload that might reset focus
                 if key in self.service.hotkeys:
-                    self.service.hotkeys[key]['tag'] = new_tag
+                    self.service.hotkeys[key]['tag'] = item.text()
                     self.service.save_config()
-                    # self.status_label.setText(f"已更新備註: {key}")
 
     def reset_editor(self):
         self.chk_ctrl.setChecked(False)
@@ -511,34 +469,22 @@ class MainWindow(QMainWindow):
         self.lbl_img.clear()
 
     def refresh_table(self):
-        self.table.blockSignals(True) # Prevent itemChanged from firing during reload
+        self.table.blockSignals(True)
         self.table.setRowCount(0)
         for k, v in self.service.hotkeys.items():
             r = self.table.rowCount()
             self.table.insertRow(r)
-            
-            # Key (Read-only)
             item_key = QTableWidgetItem(k)
             item_key.setFlags(item_key.flags() ^ Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, 0, item_key)
-            
-            # Tag (Editable)
-            tag = v.get('tag', '')
-            item_tag = QTableWidgetItem(tag)
-            # Default flags include ItemIsEditable, so we keep it
-            self.table.setItem(r, 1, item_tag)
-            
-            # Count (Read-only)
+            self.table.setItem(r, 1, QTableWidgetItem(v.get('tag', '')))
             actions = v.get('actions', [])
             item_count = QTableWidgetItem(str(len(actions)))
             item_count.setFlags(item_count.flags() ^ Qt.ItemFlag.ItemIsEditable)
             self.table.setItem(r, 2, item_count)
-            
         self.table.blockSignals(False)
 
-    # --- Execution ---
     def safe_wait(self, seconds):
-        """Non-blocking wait that keeps the GUI and Clipboard responsive."""
         loop = QEventLoop()
         QTimer.singleShot(int(seconds * 1000), loop.quit)
         loop.exec()
@@ -546,59 +492,50 @@ class MainWindow(QMainWindow):
     def handle_sequence_request(self, actions):
         self.status_label.setText("執行中...")
         clipboard = QApplication.clipboard()
-        
         for act in actions:
-            # Default delays if not in data (migration support)
             delay = act.get('delay', 0.5) 
-            
             try:
                 if act['type'] == 'text':
                     pyperclip.copy(act['value'])
                     self.safe_wait(0.05)
                     keyboard.send('ctrl+v')
-                    
                 elif act['type'] == 'key':
                     keyboard.send(act['value'])
-                    
                 elif act['type'] == 'image':
                     if os.path.exists(act['value']):
                         img = QImage(act['value'])
                         if not img.isNull():
                             clipboard.setImage(img)
-                            # Wait a bit for clipboard to take the image
                             self.safe_wait(0.1)
                             keyboard.send('ctrl+v')
-            except Exception as e:
-                print(f"Action error: {e}")
-            
-            # The custom user-defined delay happens HERE, after the action
-            # Using safe_wait ensures clipboard data can be read by target app during this time
+            except: pass
             self.safe_wait(delay)
-            
         self.status_label.setText("完成")
 
     def setup_tray(self):
         self.tray_icon = QSystemTrayIcon(self)
         self.tray_icon.setIcon(self.style().standardIcon(self.style().StandardPixmap.SP_ComputerIcon))
         menu = QMenu()
-        menu.addAction("Show", self.show)
-        menu.addAction("Quit", self.quit_app)
+        menu.addAction("顯示主視窗", self.show)
+        menu.addAction("🔄 重載快捷鍵", self.service.restart_listening)
+        menu.addSeparator()
+        menu.addAction("結束程式", self.quit_app)
         self.tray_icon.setContextMenu(menu)
         self.tray_icon.show()
         self.tray_icon.activated.connect(lambda r: self.show() if r == QSystemTrayIcon.ActivationReason.DoubleClick else None)
 
     def closeEvent(self, e):
-        e.ignore()
-        self.hide()
-        self.tray_icon.showMessage("QuickPaste", "執行中", QSystemTrayIcon.MessageIcon.Information, 1000)
+        self.service.stop_listening()
+        e.accept()
 
     def quit_app(self):
+        self.is_quitting = True
         self.service.stop_listening()
         QApplication.instance().quit()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)
+    app.setQuitOnLastWindowClosed(True)
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
     window = MainWindow()
     window.show()
